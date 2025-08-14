@@ -1,5 +1,5 @@
 // ===== Bagvoyage — service-worker.js =====
-const CACHE_VERSION = 'v2.0.2';
+const CACHE_VERSION = 'v1.2.2';
 const CACHE_NAME = `bagvoyage-${CACHE_VERSION}`;
 
 const PRECACHE = [
@@ -33,11 +33,6 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
-// Support skipWaiting via message from page
-self.addEventListener('message', (event)=>{
-  if (event?.data?.type === 'SKIP_WAITING') self.skipWaiting();
-});
-
 // Fetch strategy:
 // - HTML/doc => network-first (fallback to cache)
 // - Others => cache-first (fallback to network)
@@ -68,10 +63,6 @@ self.addEventListener('fetch', event => {
             caches.open(CACHE_NAME).then(c => c.put(req, copy));
           }
           return res;
-        }).catch(async () => {
-          // offline miss → try index for same-origin navigations
-          if (req.mode === 'navigate') return (await caches.match('./index.html')) || Response.error();
-          return Response.error();
         });
       })
     );
