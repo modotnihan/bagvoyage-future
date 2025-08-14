@@ -23,7 +23,7 @@ function isIOS() {
 }
 function isHoneywell(){
   const ua = (navigator.userAgent || '').toLowerCase();
-  return /ct60|honeywell|intermec/.test(ua);
+  return /ct60|ct40|ct45|honeywell|intermec/.test(ua);
 }
 
 // Split-label assembly (combine two Code128 halves within 1s)
@@ -32,6 +32,7 @@ let fragBuffer = []; // {digits, ts}
 function addFragment(d){
   const now=Date.now();
   fragBuffer.push({digits:d, ts:now});
+  // limit + de-dupe (recent)
   fragBuffer = fragBuffer.slice(-10).filter((f,i,a)=> now-f.ts<=FRAG_WINDOW_MS && (i===0 || f.digits!==a[i-1].digits));
 }
 function tryAssemble(){
@@ -55,11 +56,8 @@ function tryAssemble(){
   let lastRead = { code:null, ts:0 };
   let scanCooldownUntil = 0;
   let isTorchOn = false;
-  let focusKeeper = null;
-
-  // NEW: input mode toggle (camera vs hardware wedge)
-  const HID_KEY = 'bagvoyage_hid_mode';
-  let isHardwareMode = (localStorage.getItem(HID_KEY) === '1') || isHoneywell(); // default ON on Honeywell
+  let isContinuing = false; // guard for Continue
+  let useHardwareScanner = isHoneywell(); // default ON for Honeywell, togglable in UI
 
   // Local DB
   const DBKEY = 'bagvoyage_tags';
@@ -102,10 +100,51 @@ function tryAssemble(){
 
   // Status UI
   setTimeout(()=>{ $dbDot.className='dot ok'; $dbLabel.textContent='DB: online (local)'; }, 300);
-  updateInputModeUI();
 
   const vibrate = p => { try{ navigator.vibrate && navigator.vibrate(p) }catch{} };
   const toast = (msg, ms=800) => { $toast.textContent=msg; $toast.classList.add('show'); setTimeout(()=>$toast.classList.remove('show'), ms); };
+
+  // --- Keep scanner input focused while scan pane is active (for HID) ---
+  let focusKeeper = null;
+  function startFocusKeeper(){
+    clearInterval(focusKeeper);
+    focusKeeper = setInterval(()=>{
+      if (document.activeElement !== $scannerInput) $scannerInput.focus();
+    }, 150);
+  }
+  function stopFocusKeeper(){
+    clearInterval(focusKeeper); focusKeeper = null;
+  }
+
+  // --- HID wedge handler: supports burst typing + Enter suffix ---
+  let burstTimer;
+  const BURST_IDLE_MS = 60;
+  let _scanBuffer = '';
+
+  $scannerInput.addEventListener('input', ()=>{
+    if (!useHardwareScanner) return; // only buffer in HID mode
+    const chunk = $scannerInput.value;
+    if (!chunk) return;
+    _scanBuffer += chunk;
+    $scannerInput.value = '';
+    clearTimeout(burstTimer);
+    burstTimer = setTimeout(()=>{
+      const code = _scanBuffer.trim();
+      _scanBuffer = '';
+      if (code.length >= 8) onScan(code);
+    }, BURST_IDLE_MS);
+  });
+
+  $scannerInput.addEventListener('keydown', (e)=>{
+    if (!useHardwareScanner) return;
+    if (e.key === 'Enter') {
+      const combined = (_scanBuffer + $scannerInput.value).trim();
+      _scanBuffer = '';
+      $scannerInput.value = '';
+      if (combined) onScan(combined);
+      e.preventDefault();
+    }
+  });
 
   /* ---------- Torch capability & control ---------- */
   async function hasImageCaptureTorch(track){
@@ -123,7 +162,7 @@ function tryAssemble(){
     } catch { return false; }
   }
   async function setTorch(on){
-    if (!currentTrack) return false;
+    if (!currentTrack || useHardwareScanner) return false;
     try{
       if (await hasImageCaptureTorch(currentTrack)) {
         const ic = new ImageCapture(currentTrack);
@@ -145,11 +184,15 @@ function tryAssemble(){
     }
   }
   async function updateTorchUI(){
-    if (!currentTrack || isHardwareMode) { 
-      $torchBtn.disabled = true; 
-      $torchBtn.title = isHardwareMode ? 'Hardware mode: torch N/A' : 'Camera not ready'; 
-      return; 
+    if (useHardwareScanner) { // disable torch in HID mode
+      $torchBtn.disabled = true;
+      $torchBtn.title = 'Torch disabled in Hardware Scanner mode';
+      $torchBtn.setAttribute('aria-disabled', 'true');
+      $torchBtn.textContent = 'Torch';
+      $torchBtn.setAttribute('aria-pressed', 'false');
+      return;
     }
+    if (!currentTrack) { $torchBtn.disabled = true; $torchBtn.title = 'Camera not ready'; return; }
     const supported = await hasImageCaptureTorch(currentTrack) || hasTrackTorch(currentTrack);
     $torchBtn.disabled = !supported;
     $torchBtn.title = supported ? 'Toggle torch' : 'Torch not supported by this camera';
@@ -163,6 +206,7 @@ function tryAssemble(){
 
   /* ---------- Camera selection (prefer torch-capable back camera) ---------- */
   async function getBestBackCameraStream(){
+    // Provisional stream to unlock device labels
     const provisional = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' } }, audio: false
     }).catch(() => null);
@@ -213,6 +257,7 @@ function tryAssemble(){
 
   /* ---------- Result sheet (singleton) ---------- */
   function openSheet(kind, title, code, wait){
+    // Reset Continue listener
     $btnContinue.replaceWith($btnContinue.cloneNode(true));
     const freshBtn = document.getElementById('btnContinue');
     freshBtn.addEventListener('click', onContinue, { once:true });
@@ -231,12 +276,13 @@ function tryAssemble(){
   }
   function hideSheet(){
     $sheet.classList.remove('show');
+    isContinuing = false;
   }
 
   /* ---------- UI helpers ---------- */
-  function setInputStatus(text, ok){
-    $camDot.className = ok ? 'dot ok' : 'dot';
-    $camLabel.textContent = text;
+  function setCamStatus(active){
+    if(active){ $camDot.className='dot ok'; $camLabel.textContent='Camera: active'; }
+    else { $camDot.className='dot'; $camLabel.textContent='Camera: idle'; }
   }
   function showSavedTick(ms = 900){
     $savedTick.classList.add('show');
@@ -246,7 +292,7 @@ function tryAssemble(){
     $scan.classList.add('hidden');
     $home.classList.remove('hidden');
     mode=null;
-    setInputStatus('Input: idle', false);
+    setCamStatus(false);
     $scan.classList.remove('active');
     hideSheet();
     stopFocusKeeper();
@@ -257,20 +303,13 @@ function tryAssemble(){
     $home.classList.add('hidden');
     $scan.classList.remove('hidden');
     $scan.classList.add('active');
-    focusScannerInput(); 
-    startFocusKeeper();
-  }
-
-  /* ---------- Input mode UI ---------- */
-  function updateInputModeUI(){
-    if (isHardwareMode){
-      $hidBtn.textContent = 'Hardware On';
-      $hidBtn.setAttribute('aria-pressed','true');
-      $hidBtn.title = 'Hardware scanner (HID wedge) active';
+    // Focus support for HID
+    if (useHardwareScanner) {
+      $scannerInput.value='';
+      $scannerInput.focus();
+      startFocusKeeper();
     } else {
-      $hidBtn.textContent = 'Hardware Off';
-      $hidBtn.setAttribute('aria-pressed','false');
-      $hidBtn.title = 'Use camera scanning';
+      stopFocusKeeper();
     }
   }
 
@@ -279,18 +318,17 @@ function tryAssemble(){
     if (isScanning) return;
     showScan(m);
 
-    if (isHardwareMode){
-      // HID wedge path: no camera; keep focus on hidden input
+    // HID-only path when toggle is ON
+    if (useHardwareScanner) {
       isScanning = false;
-      await stopCamera();
-      setInputStatus('Input: hardware', true);
+      setCamStatus(false);
+      await stopCamera(); // ensure no camera open from before
       await updateTorchUI();
-      return;
+      return; // scans will arrive via HID → #scannerInput → onScan()
     }
 
-    // Camera path
     isScanning = true;
-    setInputStatus('Input: camera', true);
+    setCamStatus(true);
 
     await stopCamera();
     try{
@@ -304,7 +342,7 @@ function tryAssemble(){
 
       await updateTorchUI();
 
-      // Prefer native BarcodeDetector on non-iOS
+      // ---------- Prefer native BarcodeDetector on non-iOS ----------
       const canUseNative =
         !isIOS() &&
         'BarcodeDetector' in window &&
@@ -318,8 +356,9 @@ function tryAssemble(){
         if (formats.length) {
           const detector = new BarcodeDetector({ formats });
           let running = true;
+
           const frameLoop = async () => {
-            if (!isScanning || !running || isHardwareMode) return;
+            if (!isScanning || !running || useHardwareScanner) return;
             if (Date.now() < scanCooldownUntil) {
               $video.requestVideoFrameCallback(() => frameLoop());
               return;
@@ -336,16 +375,18 @@ function tryAssemble(){
             } catch (e) {
               console.warn('Native detect failed, falling back to ZXing once:', e);
               running = false;
-              await startZXingDecode();
+              await startZXingDecode(); // single fallback init
               return;
             }
             $video.requestVideoFrameCallback(() => frameLoop());
           };
           $video.requestVideoFrameCallback(() => frameLoop());
           window.__bagvoyage_native_running__ = () => { running = false; };
-          return;
+          return; // native path active
         }
       }
+
+      // ---------- ZXing fallback (or iOS path) ----------
       await startZXingDecode();
       return;
 
@@ -380,7 +421,7 @@ function tryAssemble(){
       deviceId,
       $video,
       (result, err) => {
-        if (!isScanning || !result || isHardwareMode) return;
+        if (!isScanning || !result || useHardwareScanner) return;
         if (Date.now() < scanCooldownUntil) return;
 
         const raw = result.getText();
@@ -415,11 +456,12 @@ function tryAssemble(){
     $video.pause();
     $video.srcObject = null;
     currentTrack = null;
+    setCamStatus(false);
     await updateTorchUI().catch(()=>{});
   }
 
   function stopScan(){
-    if(!isScanning) { hideSheet(); stopCamera(); return; }
+    if(!isScanning) return;
     isScanning = false;
     hideSheet();
     stopCamera();
@@ -441,12 +483,13 @@ function tryAssemble(){
       const ok = exists(code);
       if(ok){
         vibrate([40,60,40]);
-        // Stop camera if we were using it; hardware mode has no camera anyway
-        if (!isHardwareMode) await stopCamera();
-        openSheet('ok','MATCH',code,true); // show Continue
+        // Avoid race with Continue → startScan
+        isScanning = false;
+        await stopCamera();           // no-op in HID mode but safe
+        openSheet('ok','MATCH',code,true);
       } else {
         vibrate([30,40,30]);
-        openSheet('bad','UNMATCHED',code,false); // auto-hide
+        openSheet('bad','UNMATCHED',code,false);
       }
     }
   }
@@ -455,64 +498,13 @@ function tryAssemble(){
   async function onContinue(e){
     if (e && e.preventDefault) e.preventDefault();
     hideSheet();
+    isScanning = false;
     if (mode !== 'retrieve') mode = 'retrieve';
-    if (isHardwareMode){
-      // Nothing to start; HID is passive
-      setInputStatus('Input: hardware', true);
-      focusScannerInput();
-      return;
-    }
-    await startScan('retrieve'); // camera path
+    await startScan('retrieve');
   }
 
-  /* ---------- HID (hardware) input handlers ---------- */
-  function focusScannerInput(){
-    const el = $scannerInput;
-    if (document.activeElement !== el) el.focus();
-  }
-  function startFocusKeeper(){
-    clearInterval(focusKeeper);
-    focusKeeper = setInterval(()=>{
-      if (document.activeElement !== $scannerInput) $scannerInput.focus();
-    }, 150);
-  }
-  function stopFocusKeeper(){
-    clearInterval(focusKeeper); focusKeeper = null;
-  }
-
-  // Burst-friendly + Enter suffix
-  let burstTimer;
-  const BURST_IDLE_MS = 60;
-  let _scanBuffer = '';
-
-  $scannerInput.addEventListener('input', ()=>{
-    if (!isHardwareMode) return;
-    const chunk = $scannerInput.value;
-    if (!chunk) return;
-    _scanBuffer += chunk;
-    $scannerInput.value = '';
-    clearTimeout(burstTimer);
-    burstTimer = setTimeout(()=>{
-      const code = _scanBuffer.trim();
-      _scanBuffer = '';
-      if (code.length >= 8) onScan(code);
-    }, BURST_IDLE_MS);
-  });
-
-  $scannerInput.addEventListener('keydown', (e)=>{
-    if (!isHardwareMode) return;
-    if (e.key === 'Enter') {
-      const combined = (_scanBuffer + $scannerInput.value).trim();
-      _scanBuffer = '';
-      $scannerInput.value = '';
-      if (combined) onScan(combined);
-      e.preventDefault();
-    }
-  });
-
-  /* ---------- Buttons & lifecycle ---------- */
+  /* ---------- Buttons ---------- */
   $torchBtn.addEventListener('click', async ()=>{
-    if (isHardwareMode) return; // torch N/A in hardware mode
     const ok = await setTorch(!isTorchOn);
     if (!ok) updateTorchUI();
   });
@@ -522,35 +514,9 @@ function tryAssemble(){
     showHome();
   });
 
-  // NEW: toggle hardware (laser) mode
-  $hidBtn.addEventListener('click', async ()=>{
-    isHardwareMode = !isHardwareMode;
-    localStorage.setItem(HID_KEY, isHardwareMode ? '1' : '0');
-    updateInputModeUI();
-
-    if (isHardwareMode){
-      await stopCamera();
-      setInputStatus('Input: hardware', true);
-      focusScannerInput();
-    } else {
-      setInputStatus('Input: camera', false);
-      // camera will start when user presses Tag/Retrieve
-    }
-    await updateTorchUI();
-  });
-
-  // Lifecycle
-  window.addEventListener('pagehide', () => { stopScan(); });
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { stopScan(); stopFocusKeeper(); }
-    else if (mode) { isHardwareMode ? (focusScannerInput(), startFocusKeeper()) : startScan(mode); }
-  });
-
-  // Home actions
   document.getElementById('btnTag').addEventListener('click', ()=> startScan('tag'));
   document.getElementById('btnRetrieve').addEventListener('click', ()=> startScan('retrieve'));
 
-  // Manual entry
   document.getElementById('btnManual').addEventListener('click', ()=>{
     $manualInput.value='';
     $manualDlg.showModal();
@@ -560,9 +526,55 @@ function tryAssemble(){
     const v = ($manualInput.value||'').trim();
     if(!v) return;
     if(!mode || mode==='tag'){ saveTag(v); showSavedTick(); }
-    else { exists(v) ? (isHardwareMode?null:stopCamera(), openSheet('ok','MATCH',v,true)) : openSheet('bad','UNMATCHED',v,false); }
+    else { exists(v) ? (stopCamera(), openSheet('ok','MATCH',v,true)) : openSheet('bad','UNMATCHED',v,false); }
     $manualDlg.close();
   });
+
+  // NEW: Hardware Scanner toggle button
+  $hidBtn.addEventListener('click', async ()=>{
+    useHardwareScanner = !useHardwareScanner;
+    $hidBtn.textContent = `Hardware Scanner: ${useHardwareScanner ? 'On' : 'Off'}`;
+    toast(useHardwareScanner ? 'Hardware scanner enabled' : 'Camera scanner enabled', 700);
+
+    // Update UI state
+    if (useHardwareScanner) {
+      await stopCamera();
+      setCamStatus(false);
+      await updateTorchUI();
+      if ($scan && !$scan.classList.contains('hidden')) {
+        $scannerInput.value = '';
+        $scannerInput.focus();
+        startFocusKeeper();
+      }
+    } else {
+      stopFocusKeeper();
+      await updateTorchUI();
+      if ($scan && !$scan.classList.contains('hidden') && mode) {
+        await startScan(mode); // re-enter camera path
+      }
+    }
+  });
+
+  /* ---------- Lifecycle ---------- */
+  window.addEventListener('pagehide', () => { stopScan(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      stopScan();
+    } else if (mode) {
+      // resume appropriate mode
+      startScan(mode);
+    }
+  });
+
+  /* ---------- HID scanner (keep focus clicks/keys) ---------- */
+  function focusScannerInput(){
+    if (useHardwareScanner) {
+      const el = $scannerInput;
+      if (document.activeElement !== el) el.focus();
+    }
+  }
+  window.addEventListener('click', focusScannerInput);
+  window.addEventListener('keydown', focusScannerInput);
 
   /* ---------- Pull to refresh (in-app) ---------- */
   (function enablePullToRefresh(){
@@ -600,4 +612,7 @@ function tryAssemble(){
       pulling = false;
     });
   })();
+
+  // Initialize HID button label
+  $hidBtn.textContent = `Hardware Scanner: ${useHardwareScanner ? 'On' : 'Off'}`;
 })();
