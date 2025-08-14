@@ -1,171 +1,40 @@
 <!DOCTYPE html>
 <html lang="en">
-<head> 
-  <meta charset="UTF-8" />
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Bagvoyage</title>
-
-  <!-- Icons / PWA -->
-  <link rel="icon" type="image/png" sizes="32x32" href="img/bagvoyage-icon-32.png" />
-  <link rel="apple-touch-icon" href="img/bagvoyage-icon-180.png" />
-  <link rel="manifest" href="manifest.json" />
-
-  <!-- Theme Colors -->
-  <meta name="theme-color" content="#1aa3ff" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-
-  <!-- Fonts & ZXing (PINNED) -->
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
-  <!-- pin a known-good version; avoid @latest -->
-  <script src="https://unpkg.com/@zxing/browser@0.1.4"></script>
-
-  <!-- App CSS -->
-  <link rel="stylesheet" href="style.css" />
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BagVoyage</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- Splash -->
-  <div id="splash">
-    <div class="wrap">
-      <img src="img/bagvoyage-icon-192.png" alt="Bagvoyage logo" />
-      <h1>Bagvoyage</h1>
+  <header>
+    <h1>BagVoyage</h1>
+    <nav>
+      <button id="tagModeBtn" class="active">Tag</button>
+      <button id="retrieveModeBtn">Retrieve</button>
+    </nav>
+  </header>
+
+  <main>
+    <video id="cameraFeed" autoplay playsinline></video>
+    <div id="scanResult"></div>
+  </main>
+
+  <footer>
+    <button id="torchToggle">Torch</button>
+    <button id="showList">List</button>
+    <span id="counter"></span>
+  </footer>
+
+  <!-- List Drawer -->
+  <div id="listDrawer" class="hidden">
+    <div class="drawer-header">
+      <h2>Scanned Tags</h2>
+      <button id="closeList">Close</button>
     </div>
+    <ul id="tagList"></ul>
   </div>
 
-  <!-- Pull-to-refresh indicator -->
-  <div id="ptrIndicator" aria-hidden="true">↓ Release to refresh</div>
-
-  <!-- Saved ✓ overlay -->
-  <div id="savedTick" class="saved-tick" aria-hidden="true">✔</div>
-
-  <!-- Hidden input for HID barcode scanners (keyboard wedge) -->
-  <input id="scannerInput" autocomplete="off" inputmode="none" aria-hidden="true"
-         style="position:absolute;left:-9999px;opacity:0" />
-
-  <!-- Update-ready toast -->
-  <button id="updateToast" class="update-toast" aria-live="polite" hidden>
-    Update ready — tap to reload
-  </button>
-
-  <div class="app" aria-label="Bagvoyage">
-    <div class="hdr">
-      <div class="brand">
-        <!-- Simple suitcase + check -->
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <title>Suitcase with checkmark</title>
-          <rect x="5" y="7" width="14" height="12" rx="2" ry="2" fill="none" stroke="#1aa3ff" stroke-width="2"/>
-          <path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" fill="none" stroke="#1aa3ff" stroke-width="2"/>
-          <path d="M8 13l2.2 2.2L16 9.5" fill="none" stroke="#00cc88" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span>Bagvoyage</span>
-      </div>
-      <div class="right">
-        <span class="chip"><span id="dbDot" class="dot"></span><span id="dbLabel">DB: checking…</span></span>
-        <span class="chip"><span id="camDot" class="dot"></span><span id="camLabel">Camera: idle</span></span>
-      </div>
-    </div>
-
-    <!-- HOME -->
-    <div id="home" class="main home">
-      <div class="stack">
-        <!-- Current session summary -->
-        <div id="currentSessionCard" class="card">
-          <div class="card-title">Current Session</div>
-          <div id="currentSessionInfo" class="muted">No active session</div>
-          <div class="row gap">
-            <button id="btnTag" class="btn primary" disabled>Tag — Start scanning</button>
-            <button id="btnRetrieve" class="btn ghost" disabled>Retrieve — Scan to verify</button>
-            <button id="btnManual" class="btn ghost" disabled>Manual entry</button>
-          </div>
-          <div class="row gap">
-            <button id="btnExport" class="btn ghost" disabled>Export CSV</button>
-            <button id="btnCloseSession" class="btn ghost" disabled>Close Session</button>
-          </div>
-        </div>
-
-        <!-- Create new / switch session -->
-        <div class="card">
-          <div class="card-title">New / Switch Session</div>
-          <form id="newSessionForm" class="row gap">
-            <label class="field">
-              <span>Flight No.</span>
-              <input id="flightInput" type="text" placeholder="e.g., EK657" required />
-            </label>
-            <label class="field">
-              <span>Date</span>
-              <input id="dateInput" type="date" required />
-            </label>
-            <button class="btn primary" type="submit">Start / Switch</button>
-          </form>
-          <div id="sessionsList" class="session-list"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- SCAN -->
-    <div id="scan" class="main scan hidden" aria-live="polite">
-      <div class="toolbar">
-        <div class="title" id="modeTitle">Mode</div>
-        <div class="spacer"></div>
-        <button id="btnCounters" class="btn ghost" title="View list" aria-haspopup="dialog" disabled>
-          <span id="countMatched">0</span>/<span id="countTotal">0</span>
-        </button>
-        <button id="btnTorch" class="btn ghost" title="Toggle torch" aria-pressed="false" disabled>Torch</button>
-        <button id="btnStop" class="btn ghost" title="Exit scanning">Exit</button>
-      </div>
-
-      <video id="preview" muted playsinline webkit-playsinline
-             aria-label="Camera feed for barcode scanning"></video>
-
-      <div class="frame" aria-hidden="true">
-        <div class="corn tl"></div><div class="corn tr"></div><div class="corn bl"></div><div class="corn br"></div>
-        <div class="line"></div>
-      </div>
-
-      <!-- Result sheet (singleton) -->
-      <div id="sheet" class="sheet" aria-atomic="true" role="alert">
-        <div class="row">
-          <span id="pill" class="pill">STATE</span>
-          <button id="btnContinue" class="btn primary hidden">Continue</button>
-        </div>
-        <div id="sheetTitle" class="sheet-title">Result</div>
-        <div id="sheetCode" class="sheet-code" aria-live="polite"></div>
-      </div>
-
-      <!-- toast (optional) -->
-      <div id="toast" class="toast" role="status" aria-live="polite">Saved</div>
-    </div>
-  </div>
-
-  <!-- Manual entry -->
-  <dialog id="manualDialog" aria-labelledby="manualTitle">
-    <form method="dialog">
-      <div id="manualTitle" class="modal-title">Manual entry</div>
-      <label for="manualInput" class="sr-only">Enter baggage code</label>
-      <input id="manualInput" type="text" placeholder="Enter code" aria-describedby="manualDesc"/>
-      <div id="manualDesc" class="sr-only">Enter a 10-digit baggage code (with valid check digit) or 13-digit code.</div>
-      <div class="modal-actions">
-        <button class="btn ghost" value="cancel">Cancel</button>
-        <button id="manualApply" class="btn primary" value="ok">Apply</button>
-      </div>
-    </form>
-  </dialog>
-
-  <!-- List drawer -->
-  <dialog id="listDialog" class="list-dialog" aria-labelledby="listTitle">
-    <div class="list-head">
-      <div id="listTitle" class="modal-title">Session Items</div>
-      <div class="muted"><span id="listMatched">0</span>/<span id="listTotal">0</span></div>
-    </div>
-    <div id="listBody" class="list-body"></div>
-    <div class="modal-actions">
-      <button id="btnUndoLast" class="btn ghost">Undo Last Match</button>
-      <button class="btn primary" value="ok">Close</button>
-    </div>
-  </dialog>
-
-  <!-- App JS -->
   <script src="app.js"></script>
 </body>
 </html>
