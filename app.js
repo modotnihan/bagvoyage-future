@@ -1,5 +1,5 @@
 // ====== CONFIG ======
-const STRICT_VALIDATION = false;
+const STRICT_VALIDATION = false; 
 
 // ====== STATE ======
 let mode = 'tag';
