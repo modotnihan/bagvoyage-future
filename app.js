@@ -32,7 +32,6 @@ let fragBuffer = []; // {digits, ts}
 function addFragment(d){
   const now=Date.now();
   fragBuffer.push({digits:d, ts:now});
-  // limit + de-dupe (recent)
   fragBuffer = fragBuffer.slice(-10).filter((f,i,a)=> now-f.ts<=FRAG_WINDOW_MS && (i===0 || f.digits!==a[i-1].digits));
 }
 function tryAssemble(){
@@ -56,8 +55,10 @@ function tryAssemble(){
   let lastRead = { code:null, ts:0 };
   let scanCooldownUntil = 0;
   let isTorchOn = false;
-  let isContinuing = false; // guard for Continue
-  let useHardwareScanner = isHoneywell(); // default ON for Honeywell, togglable in UI
+  let isContinuing = false;
+  // Persist HID toggle; default ON on Honeywell
+  let useHardwareScanner = JSON.parse(localStorage.getItem('bagvoyage_hid') ?? 'null');
+  if (useHardwareScanner === null) useHardwareScanner = isHoneywell();
 
   // Local DB
   const DBKEY = 'bagvoyage_tags';
@@ -104,47 +105,59 @@ function tryAssemble(){
   const vibrate = p => { try{ navigator.vibrate && navigator.vibrate(p) }catch{} };
   const toast = (msg, ms=800) => { $toast.textContent=msg; $toast.classList.add('show'); setTimeout(()=>$toast.classList.remove('show'), ms); };
 
-  // --- Keep scanner input focused while scan pane is active (for HID) ---
-  let focusKeeper = null;
-  function startFocusKeeper(){
-    clearInterval(focusKeeper);
-    focusKeeper = setInterval(()=>{
-      if (document.activeElement !== $scannerInput) $scannerInput.focus();
-    }, 150);
+  /* ---------- GLOBAL HID CAPTURE (no input focus, no soft keyboard) ---------- */
+  let hidActive = false;
+  let hidBuffer = '';
+  let hidTimer = null;
+  const HID_IDLE_MS = 60;
+
+  function enableHIDCapture(){
+    if (hidActive) return;
+    hidActive = true;
+    hidBuffer = '';
+    // Ensure no focus on any input → prevents soft keyboard
+    try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch {}
+    // Gather printable keys
+    document.addEventListener('keydown', onHIDKeyDown, true);
   }
-  function stopFocusKeeper(){
-    clearInterval(focusKeeper); focusKeeper = null;
+  function disableHIDCapture(){
+    if (!hidActive) return;
+    hidActive = false;
+    document.removeEventListener('keydown', onHIDKeyDown, true);
+    hidBuffer = '';
+    clearTimeout(hidTimer); hidTimer = null;
   }
-
-  // --- HID wedge handler: supports burst typing + Enter suffix ---
-  let burstTimer;
-  const BURST_IDLE_MS = 60;
-  let _scanBuffer = '';
-
-  $scannerInput.addEventListener('input', ()=>{
-    if (!useHardwareScanner) return; // only buffer in HID mode
-    const chunk = $scannerInput.value;
-    if (!chunk) return;
-    _scanBuffer += chunk;
-    $scannerInput.value = '';
-    clearTimeout(burstTimer);
-    burstTimer = setTimeout(()=>{
-      const code = _scanBuffer.trim();
-      _scanBuffer = '';
-      if (code.length >= 8) onScan(code);
-    }, BURST_IDLE_MS);
-  });
-
-  $scannerInput.addEventListener('keydown', (e)=>{
+  function onHIDKeyDown(e){
     if (!useHardwareScanner) return;
+    // Ignore when modifiers pressed (except Shift for digits)
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+    // Enter ends the scan
     if (e.key === 'Enter') {
-      const combined = (_scanBuffer + $scannerInput.value).trim();
-      _scanBuffer = '';
-      $scannerInput.value = '';
-      if (combined) onScan(combined);
       e.preventDefault();
+      const code = hidBuffer.trim();
+      hidBuffer = '';
+      if (code) onScan(code);
+      return;
     }
-  });
+
+    // Collect digits/letters quickly; you can restrict to digits if you prefer
+    if (e.key && e.key.length === 1) {
+      const ch = e.key;
+      // accept [0-9A-Za-z-_/+] etc if needed; we only need digits but fragments can arrive
+      if (/^[0-9A-Za-z\-_/+]+$/.test(ch)) {
+        hidBuffer += ch;
+        clearTimeout(hidTimer);
+        hidTimer = setTimeout(()=>{
+          const code = hidBuffer.trim();
+          hidBuffer = '';
+          if (code.length >= 8) onScan(code);
+        }, HID_IDLE_MS);
+        // Don't let keystrokes type into focused elements if any
+        e.preventDefault();
+      }
+    }
+  }
 
   /* ---------- Torch capability & control ---------- */
   async function hasImageCaptureTorch(track){
@@ -184,7 +197,7 @@ function tryAssemble(){
     }
   }
   async function updateTorchUI(){
-    if (useHardwareScanner) { // disable torch in HID mode
+    if (useHardwareScanner) {
       $torchBtn.disabled = true;
       $torchBtn.title = 'Torch disabled in Hardware Scanner mode';
       $torchBtn.setAttribute('aria-disabled', 'true');
@@ -206,7 +219,6 @@ function tryAssemble(){
 
   /* ---------- Camera selection (prefer torch-capable back camera) ---------- */
   async function getBestBackCameraStream(){
-    // Provisional stream to unlock device labels
     const provisional = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' } }, audio: false
     }).catch(() => null);
@@ -257,7 +269,6 @@ function tryAssemble(){
 
   /* ---------- Result sheet (singleton) ---------- */
   function openSheet(kind, title, code, wait){
-    // Reset Continue listener
     $btnContinue.replaceWith($btnContinue.cloneNode(true));
     const freshBtn = document.getElementById('btnContinue');
     freshBtn.addEventListener('click', onContinue, { once:true });
@@ -295,7 +306,7 @@ function tryAssemble(){
     setCamStatus(false);
     $scan.classList.remove('active');
     hideSheet();
-    stopFocusKeeper();
+    disableHIDCapture();
   }
   function showScan(m){
     mode=m;
@@ -303,13 +314,11 @@ function tryAssemble(){
     $home.classList.add('hidden');
     $scan.classList.remove('hidden');
     $scan.classList.add('active');
-    // Focus support for HID
     if (useHardwareScanner) {
-      $scannerInput.value='';
-      $scannerInput.focus();
-      startFocusKeeper();
+      disableHIDCapture(); // reset
+      enableHIDCapture();  // start global capture (no focus)
     } else {
-      stopFocusKeeper();
+      disableHIDCapture();
     }
   }
 
@@ -318,13 +327,13 @@ function tryAssemble(){
     if (isScanning) return;
     showScan(m);
 
-    // HID-only path when toggle is ON
+    // HID-only path
     if (useHardwareScanner) {
       isScanning = false;
       setCamStatus(false);
-      await stopCamera(); // ensure no camera open from before
+      await stopCamera();
       await updateTorchUI();
-      return; // scans will arrive via HID → #scannerInput → onScan()
+      return;
     }
 
     isScanning = true;
@@ -342,7 +351,6 @@ function tryAssemble(){
 
       await updateTorchUI();
 
-      // ---------- Prefer native BarcodeDetector on non-iOS ----------
       const canUseNative =
         !isIOS() &&
         'BarcodeDetector' in window &&
@@ -375,18 +383,17 @@ function tryAssemble(){
             } catch (e) {
               console.warn('Native detect failed, falling back to ZXing once:', e);
               running = false;
-              await startZXingDecode(); // single fallback init
+              await startZXingDecode();
               return;
             }
             $video.requestVideoFrameCallback(() => frameLoop());
           };
           $video.requestVideoFrameCallback(() => frameLoop());
           window.__bagvoyage_native_running__ = () => { running = false; };
-          return; // native path active
+          return;
         }
       }
 
-      // ---------- ZXing fallback (or iOS path) ----------
       await startZXingDecode();
       return;
 
@@ -398,7 +405,7 @@ function tryAssemble(){
     }
   }
 
-  // ZXing init, bound to the SAME deviceId as currentTrack
+  // ZXing init, bound to SAME device as currentTrack
   async function startZXingDecode() {
     const ZXB = window.ZXingBrowser || {};
     const ReaderClass = ZXB.BrowserMultiFormatReader;
@@ -472,7 +479,7 @@ function tryAssemble(){
     const code = (text||'').trim();
     if(!code) return;
     const now = Date.now();
-    if(code===lastRead.code && (now-lastRead.ts)<900) return; // de-dupe
+    if(code===lastRead.code && (now-lastRead.ts)<1200) return; // stronger dedupe
     lastRead = { code, ts: now };
 
     if(mode==='tag'){
@@ -483,9 +490,8 @@ function tryAssemble(){
       const ok = exists(code);
       if(ok){
         vibrate([40,60,40]);
-        // Avoid race with Continue → startScan
         isScanning = false;
-        await stopCamera();           // no-op in HID mode but safe
+        await stopCamera();
         openSheet('ok','MATCH',code,true);
       } else {
         vibrate([30,40,30]);
@@ -500,6 +506,13 @@ function tryAssemble(){
     hideSheet();
     isScanning = false;
     if (mode !== 'retrieve') mode = 'retrieve';
+
+    if (useHardwareScanner) {
+      // Stay in HID mode; just make sure camera is off and doc has no focused input
+      await stopCamera();
+      try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch {}
+      return;
+    }
     await startScan('retrieve');
   }
 
@@ -528,91 +541,53 @@ function tryAssemble(){
     if(!mode || mode==='tag'){ saveTag(v); showSavedTick(); }
     else { exists(v) ? (stopCamera(), openSheet('ok','MATCH',v,true)) : openSheet('bad','UNMATCHED',v,false); }
     $manualDlg.close();
+    // In HID mode: keep document unfocused to prevent keyboard
+    if (useHardwareScanner) { try{ document.activeElement && document.activeElement.blur && document.activeElement.blur(); }catch{} }
   });
 
-  // NEW: Hardware Scanner toggle button
+  // Hardware Scanner toggle
   $hidBtn.addEventListener('click', async ()=>{
     useHardwareScanner = !useHardwareScanner;
+    localStorage.setItem('bagvoyage_hid', JSON.stringify(useHardwareScanner));
     $hidBtn.textContent = `Hardware Scanner: ${useHardwareScanner ? 'On' : 'Off'}`;
     toast(useHardwareScanner ? 'Hardware scanner enabled' : 'Camera scanner enabled', 700);
 
-    // Update UI state
     if (useHardwareScanner) {
+      isScanning = false;
       await stopCamera();
       setCamStatus(false);
       await updateTorchUI();
-      if ($scan && !$scan.classList.contains('hidden')) {
-        $scannerInput.value = '';
-        $scannerInput.focus();
-        startFocusKeeper();
-      }
+      enableHIDCapture();
+      // Ensure nothing focused
+      try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch {}
     } else {
-      stopFocusKeeper();
+      disableHIDCapture();
       await updateTorchUI();
       if ($scan && !$scan.classList.contains('hidden') && mode) {
-        await startScan(mode); // re-enter camera path
+        await startScan(mode);
       }
     }
   });
 
   /* ---------- Lifecycle ---------- */
-  window.addEventListener('pagehide', () => { stopScan(); });
+  window.addEventListener('pagehide', () => { stopScan(); disableHIDCapture(); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       stopScan();
+      disableHIDCapture();
     } else if (mode) {
-      // resume appropriate mode
-      startScan(mode);
+      if (useHardwareScanner) {
+        enableHIDCapture();
+        stopCamera();
+        setCamStatus(false);
+        updateTorchUI();
+        try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch {}
+      } else {
+        startScan(mode);
+      }
     }
   });
 
-  /* ---------- HID scanner (keep focus clicks/keys) ---------- */
-  function focusScannerInput(){
-    if (useHardwareScanner) {
-      const el = $scannerInput;
-      if (document.activeElement !== el) el.focus();
-    }
-  }
-  window.addEventListener('click', focusScannerInput);
-  window.addEventListener('keydown', focusScannerInput);
-
-  /* ---------- Pull to refresh (in-app) ---------- */
-  (function enablePullToRefresh(){
-    const THRESHOLD = 70;
-    let startY = 0, pulling = false, activated = false;
-
-    window.addEventListener('touchstart', (e) => {
-      if (document.scrollingElement.scrollTop === 0) {
-        startY = e.touches[0].clientY;
-        pulling = true; activated = false;
-      } else pulling = false;
-    }, { passive: true });
-
-    window.addEventListener('touchmove', (e) => {
-      if (!pulling) return;
-      const dy = e.touches[0].clientY - startY;
-      if (dy > 0) {
-        if (dy > THRESHOLD && !activated) {
-          $ptr.classList.add('active');
-          activated = true;
-        } else if (dy <= THRESHOLD && activated) {
-          $ptr.classList.remove('active');
-          activated = false;
-        }
-      }
-    }, { passive: true });
-
-    window.addEventListener('touchend', () => {
-      if (pulling && activated) {
-        $ptr.classList.remove('active');
-        setTimeout(() => window.location.reload(), 60);
-      } else {
-        $ptr.classList.remove('active');
-      }
-      pulling = false;
-    });
-  })();
-
-  // Initialize HID button label
+  // Initialize labels/states
   $hidBtn.textContent = `Hardware Scanner: ${useHardwareScanner ? 'On' : 'Off'}`;
 })();
