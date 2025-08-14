@@ -1,134 +1,142 @@
-// ====== CONFIG ======
-const STRICT_VALIDATION = false; 
+/* =========================
+   BagVoyage — app.js (clean)
+   ========================= */
 
-// ====== STATE ======
-let mode = 'tag';
-let currentStream;
+/* ---------- Config ---------- */
+// Set to true if you want to reject 10-digit codes that fail IATA 7-3-1 check-digit.
+// Leave false during field testing to avoid blocking operators.
+const STRICT_VALIDATION = false;
+
+/* ---------- State ---------- */
+let mode = 'tag'; // 'tag' | 'retrieve'
+let currentStream = null;
+let reader = null; // ZXing reader instance
 let torchOn = false;
+let lastScanAt = 0; // throttle
 
-// ====== HELPERS ======
-function extractDigits(str){ return str.replace(/\D+/g, ''); }
-function validIATATag10(code){
-  if (!/^\d{10}$/.test(code)) return false;
-  const weights = [7,3,1,7,3,1,7,3,1];
-  let sum = 0;
-  for (let i=0;i<9;i++) sum += parseInt(code[i])*weights[i];
-  return (sum % 10) === parseInt(code[9]);
+/* ---------- DOM ---------- */
+const $video = document.getElementById('cameraFeed');
+const $result = document.getElementById('scanResult');
+const $counter = document.getElementById('counter');
+const $torch = document.getElementById('torchToggle');
+const $listBtn = document.getElementById('showList');
+const $list = document.getElementById('listDrawer');
+const $closeList = document.getElementById('closeList');
+const $tagList = document.getElementById('tagList');
+const $tagBtn = document.getElementById('tagModeBtn');
+const $retBtn = document.getElementById('retrieveModeBtn');
+const $hid = document.getElementById('scannerInput');
+
+/* ---------- Helpers ---------- */
+function extractDigits(s){ return (s||'').replace(/\D+/g,''); }
+function validIATATag10(d){
+  if (!/^\d{10}$/.test(d)) return false;
+  const w = [7,3,1]; let sum = 0;
+  for (let i=0;i<9;i++) sum += (+d[i]) * w[i%3];
+  return (sum % 10) === +d[9];
 }
-function normalizeBaggageCode(raw){
+// Accept 10-digit (with optional strict check) or 13-digit
+function normalize(raw){
   const d = extractDigits(raw);
-  if (d.length === 10){
-    if (validIATATag10(d) || !STRICT_VALIDATION) return d;
-    return '';
-  }
+  if (d.length === 10) return (validIATATag10(d) || !STRICT_VALIDATION) ? d : '';
   if (d.length === 13) return d;
   return '';
 }
 
-// ====== STORAGE ======
-function getSessionKey(){ return `bagvoyage_${mode}`; }
-function loadTags(){ return JSON.parse(localStorage.getItem(getSessionKey())||'[]'); }
-function saveTags(tags){ localStorage.setItem(getSessionKey(), JSON.stringify(tags)); }
+/* ---------- Storage ---------- */
+const KEY = 'bagvoyage_tags'; // single bucket for now
+function load(){ try { return JSON.parse(localStorage.getItem(KEY)||'[]'); } catch { return []; } }
+function save(a){ try { localStorage.setItem(KEY, JSON.stringify(a)); } catch {} }
+function updateCounter(){ $counter.textContent = `Count: ${load().length}`; }
 
 function saveTag(raw){
-  const n = normalizeBaggageCode(raw);
-  let stored = n;
-  let note = '';
-
-  if (!stored){
+  let n = normalize(raw), note = '';
+  if (!n) {
     const d = extractDigits(raw);
-    if (d.length === 10 || d.length === 13){
-      stored = d;
-      note = 'lenient';
-    }
+    if (d.length === 10 || d.length === 13) { n = d; note = 'lenient'; }
   }
-  if (!stored) return false;
-
-  const list = loadTags();
-  if (!list.some(x=>x.code===stored)){
-    list.unshift({code: stored, ts: Date.now(), note});
-    saveTags(list);
+  if (!n) return false;
+  const a = load();
+  if (!a.some(x=>x.code===n)) {
+    a.unshift({ code:n, ts:Date.now(), note });
+    if (a.length > 5000) a.pop();
+    save(a);
     updateCounter();
   }
   return true;
 }
-
-function existsInTags(raw){
-  const n = normalizeBaggageCode(raw);
-  const d = extractDigits(raw);
-  const list = loadTags();
-  if (n && list.some(x=>x.code===n)) return true;
-  if ((!n || STRICT_VALIDATION) && (d.length===10 || d.length===13)){
-    return list.some(x=>x.code===d);
-  }
+function exists(raw){
+  const n = normalize(raw), d = extractDigits(raw), a = load();
+  if (n && a.some(x=>x.code===n)) return true;
+  if ((!n || STRICT_VALIDATION) && (d.length===10 || d.length===13))
+    return a.some(x=>x.code===d);
   return false;
 }
 
-// ====== CAMERA ======
-async function startCamera(){
-  if (currentStream){
-    currentStream.getTracks().forEach(t=>t.stop());
-  }
-  const constraints = {video: {facingMode: 'environment'}};
-  currentStream = await navigator.mediaDevices.getUserMedia(constraints);
-  document.getElementById('cameraFeed').srcObject = currentStream;
+/* ---------- UI ---------- */
+function showResult(text, ok){
+  $result.textContent = text;
+  $result.style.background = ok ? 'rgba(0,128,0,0.7)' : 'rgba(128,0,0,0.7)';
+  clearTimeout(showResult._t);
+  showResult._t = setTimeout(()=>{ $result.textContent=''; }, 1400);
 }
-
-function toggleTorch(){
-  if (!currentStream) return;
-  const track = currentStream.getVideoTracks()[0];
-  const cap = track.getCapabilities();
-  if (!cap.torch) return alert('Torch not supported');
-  torchOn = !torchOn;
-  track.applyConstraints({advanced:[{torch: torchOn}]});
-}
-
-// ====== UI ======
-function updateCounter(){
-  document.getElementById('counter').textContent = `Count: ${loadTags().length}`;
-}
-
 function renderList(){
-  const list = loadTags();
-  const ul = document.getElementById('tagList');
-  ul.innerHTML = '';
-  list.forEach(item=>{
-    const li = document.createElement('li');
-    li.innerHTML = `${item.code}${item.note==='lenient' ? '<span class="badge">LENIENT</span>' : ''}`;
-    ul.appendChild(li);
-  });
+  const a = load();
+  $tagList.innerHTML = a.map(item =>
+    `<li>${item.code}${item.note==='lenient' ? ' <span class="badge">LENIENT</span>' : ''}</li>`
+  ).join('') || '<li class="muted">No tags yet.</li>';
 }
 
-function showResult(text, match=false){
-  const el = document.getElementById('scanResult');
-  el.textContent = text;
-  el.style.background = match ? 'rgba(0,128,0,0.7)' : 'rgba(128,0,0,0.7)';
-  setTimeout(()=>{ el.textContent = ''; }, 2000);
+/* ---------- Mode switching ---------- */
+function setMode(m){
+  mode = m;
+  const tagActive = (m==='tag');
+  $tagBtn.classList.toggle('active', tagActive);
+  $retBtn.classList.toggle('active', !tagActive);
+  $tagBtn.setAttribute('aria-pressed', String(tagActive));
+  $retBtn.setAttribute('aria-pressed', String(!tagActive));
+  // brief visual cue
+  showResult(tagActive ? 'Tag mode' : 'Retrieve mode', true);
 }
 
-// ====== SCANNING ======
-// Placeholder scanner simulation — integrate with your real QR/barcode lib here.
-function fakeScan(){
-  const sample = prompt('Enter fake scan value:');
-  if (!sample) return;
-  if (mode==='tag'){
-    if (saveTag(sample)) showResult('Saved ✓', true);
-    else showResult('Invalid ❌', false);
-  } else {
-    if (existsInTags(sample)) showResult('MATCH ✓', true);
-    else showResult('UNMATCHED ❌', false);
+$tagBtn.onclick = ()=> setMode('tag');
+$retBtn.onclick = ()=> setMode('retrieve');
+
+/* ---------- Camera & Torch ---------- */
+async function startCamera(){
+  try{
+    await stopCamera();
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920, min: 1280 },
+        height:{ ideal: 1080, min: 720 },
+        frameRate: { ideal: 30, min: 15 }
+      },
+      audio: false
+    });
+    currentStream = stream;
+    $video.srcObject = stream;
+
+    // Torch availability
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities?.() || {};
+    const torchSupported = 'torch' in caps;
+    $torch.disabled = !torchSupported;
+    if (!torchSupported) {
+      $torch.title = 'Torch not supported on this camera';
+    } else {
+      $torch.title = 'Toggle torch';
+    }
+
+    // ZXing setup (bind to this device)
+    await startZXing(track.getSettings?.().deviceId);
+
+  }catch(e){
+    console.error('Camera error:', e);
+    showResult('Camera error: ' + (e.message||e), false);
   }
 }
 
-// ====== INIT ======
-document.getElementById('tagModeBtn').onclick = ()=>{ mode='tag'; updateCounter(); };
-document.getElementById('retrieveModeBtn').onclick = ()=>{ mode='retrieve'; updateCounter(); };
-document.getElementById('torchToggle').onclick = toggleTorch;
-document.getElementById('showList').onclick = ()=>{ renderList(); document.getElementById('listDrawer').classList.remove('hidden'); };
-document.getElementById('closeList').onclick = ()=>{ document.getElementById('listDrawer').classList.add('hidden'); };
-
-startCamera();
-updateCounter();
-
-// TEMP: bind fake scan for demo without camera library
-document.getElementById('cameraFeed').onclick = fakeScan;
+async function stopCamera(){
+  try { await sto
