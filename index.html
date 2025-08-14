@@ -2,57 +2,125 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>BagVoyage</title>
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Bagvoyage</title>
 
-  <!-- CSS (keep your filename: style.css) -->
-  <link rel="stylesheet" href="style.css" />
-
-   <!-- Manifest (PWA) -->
+  <!-- Icons / PWA -->
+  <link rel="icon" type="image/png" sizes="32x32" href="img/bagvoyage-icon-32.png" />
+  <link rel="apple-touch-icon" href="img/bagvoyage-icon-180.png" />
   <link rel="manifest" href="manifest.json" />
- 
-  <!-- ZXing (PINNED; not @latest) -->
-  <script src="https://unpkg.com/@zxing/browser@0.1.4"></script>
+
+  <!-- Theme Colors -->
+  <meta name="theme-color" content="#1aa3ff" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+  <!-- Fonts & ZXing -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/@zxing/browser@latest"></script>
+
+  <!-- App CSS -->
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <h1>BagVoyage</h1>
-    <nav>
-      <button id="tagModeBtn" class="active" aria-pressed="true">Tag</button>
-      <button id="retrieveModeBtn" aria-pressed="false">Retrieve</button>
-    </nav>
-  </header>
-
-  <main>
-    <!-- Camera preview -->
-    <video id="cameraFeed" autoplay playsinline webkit-playsinline></video>
-
-    <!-- Scan feedback bubble -->
-    <div id="scanResult" role="status" aria-live="polite"></div>
-  </main>
-
-  <footer>
-    <div class="left">
-      <button id="torchToggle" title="Toggle torch" disabled>Torch</button>
-      <button id="showList" title="Show scanned list">List</button>
+  <!-- Splash -->
+  <div id="splash">
+    <div class="wrap">
+      <img src="img/bagvoyage-icon-192.png" alt="Bagvoyage logo" />
+      <h1>Bagvoyage</h1>
     </div>
-    <div class="right">
-      <span id="counter" aria-label="Scanned count">Count: 0</span>
-    </div>
-  </footer>
-
-  <!-- Drawer: scanned tags -->
-  <div id="listDrawer" class="hidden" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
-    <div class="drawer-header">
-      <h2 id="drawerTitle">Scanned Tags</h2>
-      <button id="closeList" aria-label="Close list">Close</button>
-    </div>
-    <ul id="tagList"></ul>
   </div>
 
-  <!-- Hidden input for HID barcode scanners -->
-  <input id="scannerInput" autocomplete="off" inputmode="none" aria-hidden="true"
-         style="position:absolute;left:-9999px;opacity:0" />
+  <!-- Pull-to-refresh indicator -->
+  <div id="ptrIndicator" aria-hidden="true">↓ Release to refresh</div>
+
+  <!-- Saved ✓ overlay -->
+  <div id="savedTick" class="saved-tick" aria-hidden="true">✔</div>
+
+  <!-- Hidden input for HID barcode scanners (keyboard wedge) -->
+  <input id="scannerInput"
+         type="text"
+         autocomplete="off"
+         autocapitalize="off"
+         spellcheck="false"
+         autofocus
+         aria-hidden="true"
+         style="position:absolute;left:-9999px;opacity:0;width:1px;height:1px" />
+
+  <div class="app" role="application" aria-label="Bagvoyage">
+    <div class="hdr">
+      <div class="brand">
+        <!-- Simple suitcase + check -->
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <title>Suitcase with checkmark</title>
+          <rect x="5" y="7" width="14" height="12" rx="2" ry="2" fill="none" stroke="#1aa3ff" stroke-width="2"/>
+          <path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" fill="none" stroke="#1aa3ff" stroke-width="2"/>
+          <path d="M8 13l2.2 2.2L16 9.5" fill="none" stroke="#00cc88" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>Bagvoyage</span>
+      </div>
+      <div class="right">
+        <span class="chip"><span id="dbDot" class="dot"></span><span id="dbLabel">DB: checking…</span></span>
+        <span class="chip"><span id="camDot" class="dot"></span><span id="camLabel">Input: idle</span></span>
+      </div>
+    </div>
+
+    <div id="home" class="main home">
+      <div class="stack">
+        <button id="btnTag" class="btn primary">Tag — Start scanning</button>
+        <button id="btnRetrieve" class="btn ghost">Retrieve — Scan to verify</button>
+        <button id="btnManual" class="btn ghost">Manual entry</button>
+      </div>
+    </div>
+
+    <div id="scan" class="main scan hidden" aria-live="polite">
+      <div class="toolbar">
+        <div class="title" id="modeTitle">Mode</div>
+        <div class="spacer"></div>
+
+        <!-- NEW: Hardware (laser) scanner toggle -->
+        <button id="btnHID" class="btn ghost" title="Toggle hardware scanner (HID)">Hardware Off</button>
+
+        <button id="btnTorch" class="btn ghost" title="Toggle torch" aria-pressed="false" disabled>Torch</button>
+        <button id="btnStop" class="btn ghost" title="Exit scanning">Exit</button>
+      </div>
+
+      <video id="preview" muted playsinline webkit-playsinline
+             aria-label="Camera feed for barcode scanning"></video>
+
+      <div class="frame" aria-hidden="true">
+        <div class="corn tl"></div><div class="corn tr"></div><div class="corn bl"></div><div class="corn br"></div>
+        <div class="line"></div>
+      </div>
+
+      <!-- Result sheet (singleton) -->
+      <div id="sheet" class="sheet" aria-atomic="true" role="alert">
+        <div class="row">
+          <span id="pill" class="pill">STATE</span>
+          <button id="btnContinue" class="btn primary hidden">Continue</button>
+        </div>
+        <div id="sheetTitle" class="sheet-title">Result</div>
+        <div id="sheetCode" class="sheet-code" aria-live="polite"></div>
+      </div>
+
+      <!-- toast (optional) -->
+      <div id="toast" class="toast" role="status" aria-live="polite">Saved</div>
+    </div>
+  </div>
+
+  <!-- Manual entry -->
+  <dialog id="manualDialog" aria-labelledby="manualTitle">
+    <form method="dialog">
+      <div id="manualTitle" class="modal-title">Manual entry</div>
+      <label for="manualInput" class="sr-only">Enter baggage code</label>
+      <input id="manualInput" type="text" placeholder="Enter code" aria-describedby="manualDesc"/>
+      <div id="manualDesc" class="sr-only">Enter a 10 or 13-digit baggage code.</div>
+      <div class="modal-actions">
+        <button class="btn ghost" value="cancel">Cancel</button>
+        <button id="manualApply" class="btn primary" value="ok">Apply</button>
+      </div>
+    </form>
+  </dialog>
 
   <!-- App JS -->
   <script src="app.js"></script>
