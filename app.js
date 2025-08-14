@@ -139,4 +139,129 @@ async function startCamera(){
 }
 
 async function stopCamera(){
-  try { await sto
+  try { await stopZXing(); } catch {}
+  if (currentStream){
+    currentStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
+  }
+  currentStream = null;
+  torchOn = false;
+  $torch.disabled = true;
+}
+
+$torch.onclick = async ()=>{
+  try{
+    const track = currentStream?.getVideoTracks?.()[0];
+    if (!track) return;
+    const caps = track.getCapabilities?.() || {};
+    if (!('torch' in caps)) return;
+    torchOn = !torchOn;
+    await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+  }catch(e){
+    console.warn('Torch error', e);
+  }
+};
+
+/* ---------- ZXing scanning ---------- */
+async function startZXing(deviceId){
+  const ZXB = window.ZXingBrowser || {};
+  const Reader = ZXB.BrowserMultiFormatReader;
+  if (!Reader) throw new Error('ZXing not loaded');
+
+  reader = new Reader();
+
+  const BF = ZXB.BarcodeFormat, HT = ZXB.DecodeHintType;
+  let hints;
+  if (BF && HT) {
+    const fmts = [BF.ITF, BF.CODE_128, BF.EAN_13, BF.EAN_8, BF.UPC_A]; // focus on 1D + EAN
+    hints = new Map();
+    hints.set(HT.TRY_HARDER, true);
+    hints.set(HT.POSSIBLE_FORMATS, fmts);
+    hints.set(HT.ASSUME_GS1, true);
+  }
+
+  const MIN_INTERVAL = 80;
+
+  await reader.decodeFromVideoDevice(
+    deviceId || undefined,
+    $video,
+    (result, err) => {
+      if (!result) return;
+      const now = Date.now();
+      if (now - lastScanAt < MIN_INTERVAL) return;
+      lastScanAt = now;
+
+      const text = result.getText?.() || '';
+      if (!text) return;
+
+      if (mode === 'tag'){
+        const ok = saveTag(text);
+        showResult(ok ? 'Saved ✓' : 'Invalid ❌', ok);
+      } else {
+        const ok = exists(text);
+        showResult(ok ? 'MATCH ✓' : 'UNMATCHED ❌', ok);
+      }
+    },
+    hints
+  );
+}
+
+async function stopZXing(){
+  try { await reader?.reset?.(); } catch {}
+  reader = null;
+}
+
+/* ---------- HID barcode scanners (keyboard wedge) ---------- */
+// Keep a hidden input focused when scanning so wedge devices can type into it.
+function focusHID(){
+  if (document.activeElement !== $hid) $hid.focus();
+}
+window.addEventListener('click', focusHID);
+window.addEventListener('keydown', focusHID);
+
+let burstTimer;
+const BURST_IDLE_MS = 60;
+$hid.addEventListener('keydown', (e)=>{
+  clearTimeout(burstTimer);
+  if (e.key === 'Enter') {
+    const code = $hid.value.trim(); $hid.value = '';
+    if (!code) return;
+    if (mode === 'tag'){
+      const ok = saveTag(code);
+      showResult(ok ? 'Saved ✓' : 'Invalid ❌', ok);
+    } else {
+      const ok = exists(code);
+      showResult(ok ? 'MATCH ✓' : 'UNMATCHED ❌', ok);
+    }
+    e.preventDefault();
+  } else {
+    // When scanner finishes a burst, treat buffered input as a scan
+    burstTimer = setTimeout(()=>{
+      const code = $hid.value.trim(); $hid.value = '';
+      if (code.length >= 8) {
+        if (mode === 'tag'){
+          const ok = saveTag(code);
+          showResult(ok ? 'Saved ✓' : 'Invalid ❌', ok);
+        } else {
+          const ok = exists(code);
+          showResult(ok ? 'MATCH ✓' : 'UNMATCHED ❌', ok);
+        }
+      }
+    }, BURST_IDLE_MS);
+  }
+});
+
+/* ---------- List drawer ---------- */
+$listBtn.onclick = ()=>{ renderList(); $list.classList.remove('hidden'); };
+$closeList.onclick = ()=> $list.classList.add('hidden');
+
+/* ---------- Init ---------- */
+(async function init(){
+  updateCounter();
+  await startCamera();
+
+  // Basic lifecycle safety
+  document.addEventListener('visibilitychange', async ()=>{
+    if (document.hidden) { await stopCamera(); }
+    else { await startCamera(); }
+  });
+})();
