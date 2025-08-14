@@ -1,41 +1,57 @@
 <!DOCTYPE html>
-<html lang="en"> 
-<head> 
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>BagVoyage</title>
-  <link rel="stylesheet" href="style.css">
+
+  <!-- CSS (keep your filename: style.css) -->
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- ZXing (PINNED; not @latest) -->
+  <script src="https://unpkg.com/@zxing/browser@0.1.4"></script>
 </head>
 <body>
   <header>
     <h1>BagVoyage</h1>
     <nav>
-      <button id="tagModeBtn" class="active">Tag</button>
-      <button id="retrieveModeBtn">Retrieve</button>
+      <button id="tagModeBtn" class="active" aria-pressed="true">Tag</button>
+      <button id="retrieveModeBtn" aria-pressed="false">Retrieve</button>
     </nav>
   </header>
 
   <main>
-    <video id="cameraFeed" autoplay playsinline></video>
-    <div id="scanResult"></div>
+    <!-- Camera preview -->
+    <video id="cameraFeed" autoplay playsinline webkit-playsinline></video>
+
+    <!-- Scan feedback bubble -->
+    <div id="scanResult" role="status" aria-live="polite"></div>
   </main>
 
   <footer>
-    <button id="torchToggle">Torch</button>
-    <button id="showList">List</button>
-    <span id="counter"></span>
+    <div class="left">
+      <button id="torchToggle" title="Toggle torch" disabled>Torch</button>
+      <button id="showList" title="Show scanned list">List</button>
+    </div>
+    <div class="right">
+      <span id="counter" aria-label="Scanned count">Count: 0</span>
+    </div>
   </footer>
 
-  <!-- List Drawer -->
-  <div id="listDrawer" class="hidden">
+  <!-- Drawer: scanned tags -->
+  <div id="listDrawer" class="hidden" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
     <div class="drawer-header">
-      <h2>Scanned Tags</h2>
-      <button id="closeList">Close</button>
+      <h2 id="drawerTitle">Scanned Tags</h2>
+      <button id="closeList" aria-label="Close list">Close</button>
     </div>
     <ul id="tagList"></ul>
   </div>
 
+  <!-- Hidden input for HID barcode scanners -->
+  <input id="scannerInput" autocomplete="off" inputmode="none" aria-hidden="true"
+         style="position:absolute;left:-9999px;opacity:0" />
+
+  <!-- App JS -->
   <script src="app.js"></script>
 </body>
 </html>
-
