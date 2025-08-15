@@ -2,8 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport"
-        content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Bagvoyage</title>
 
   <!-- Icons / PWA -->
@@ -78,7 +77,7 @@
         <div class="title" id="modeTitle">Mode</div>
         <div class="spacer"></div>
 
-        <!-- NEW: Hardware Scanner toggle -->
+        <!-- Hardware Scanner toggle -->
         <button id="btnHID" class="btn ghost" title="Toggle hardware scanner (HID)">Hardware Scanner: Off</button>
 
         <button id="btnTorch" class="btn ghost" title="Toggle torch" aria-pressed="false" disabled>Torch</button>
@@ -122,80 +121,86 @@
     </form>
   </dialog>
 
-   <!-- App JS -->
+  <!-- Firebase compat SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
 
-<!-- Firebase compat SDKs -->
-<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
+  <!-- Firebase init -->
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyAGIsT39wSCmFdygWtVe-u1DIPo06OTWko",
+      authDomain: "bagvoyage-future.firebaseapp.com",
+      projectId: "bagvoyage-future",
+      storageBucket: "bagvoyage-future.appspot.com",
+      messagingSenderId: "966888670918",
+      appId: "1:966888670918:web:cb61491c8ee5e85377f9c7",
+      measurementId: "G-BNENF85XLE"
+    };
+    firebase.initializeApp(firebaseConfig);
 
-<script>
-  // 1) Init
-  const firebaseConfig = { /* your keys */ };
-  firebase.initializeApp(firebaseConfig);
+    // Firestore settings (Safari-friendly) + offline cache
+    const fs = firebase.firestore();
+    fs.settings({
+      experimentalAutoDetectLongPolling: true,
+      useFetchStreams: false
+    });
+    fs.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
+  </script>
 
-  // 2) Firestore settings (Safari-friendly) + offline cache
-  const fs = firebase.firestore();
-  fs.settings({
-    experimentalAutoDetectLongPolling: true,
-    useFetchStreams: false
-  });
-  fs.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
-</script>
+  <!-- GLOBAL session helper (defines window.BV) -->
+  <script>
+    window.BV = (function(){
+      const db = firebase.firestore(), auth = firebase.auth();
 
-<script>
-  // 3) GLOBAL session helper (defines window.BV)
-  window.BV = (function(){
-    const db = firebase.firestore(), auth = firebase.auth();
+      function sessionDocId(){ return 'global'; }
 
-    function sessionDocId(){ return 'global'; }
-
-    async function signInAnon(){
-      if (!auth.currentUser) await auth.signInAnonymously();
-      return auth.currentUser;
-    }
-    async function ensureSession(){
-      const id = sessionDocId();
-      await db.collection('sessions').doc(id).set({
-        label: 'global',
-        created_at: firebase.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-      return id;
-    }
-    async function saveTagServer(sessionId, code, source='camera'){
-      if (!sessionId || !code) return;
-      await db.collection('sessions').doc(sessionId).collection('tags')
-        .doc(code).set({
-          code, source,
+      async function signInAnon(){
+        if (!auth.currentUser) await auth.signInAnonymously();
+        return auth.currentUser;
+      }
+      async function ensureSession(){
+        const id = sessionDocId();
+        await db.collection('sessions').doc(id).set({
+          label: 'global',
           created_at: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge:true });
-    }
-    async function existsServer(sessionId, code){
-      const snap = await db.collection('sessions').doc(sessionId)
-        .collection('tags').doc(code).get();
-      return snap.exists;
-    }
-    function subscribeTags(sessionId, onAdd){
-      return db.collection('sessions').doc(sessionId).collection('tags')
-        .orderBy('created_at','desc').limit(200)
-        .onSnapshot(s => s.docChanges().forEach(ch => {
-          if (ch.type === 'added') onAdd && onAdd(ch.doc.id);
-        }));
-    }
-    async function logScan(sessionId, code, matched){
-      await db.collection('sessions').doc(sessionId).collection('scans').add({
-        code, matched: !!matched, ua: navigator.userAgent.slice(0,120),
-        created_at: firebase.firestore.FieldValue.serverTimestamp()
-      });
-    }
+        }, { merge: true });
+        return id;
+      }
+      async function saveTagServer(sessionId, code, source='camera'){
+        if (!sessionId || !code) return;
+        await db.collection('sessions').doc(sessionId).collection('tags')
+          .doc(code).set({
+            code, source,
+            created_at: firebase.firestore.FieldValue.serverTimestamp()
+          }, { merge:true });
+      }
+      async function existsServer(sessionId, code){
+        if (!sessionId || !code) return false;
+        const snap = await db.collection('sessions').doc(sessionId)
+          .collection('tags').doc(code).get();
+        return snap.exists;
+      }
+      function subscribeTags(sessionId, onAdd){
+        return db.collection('sessions').doc(sessionId).collection('tags')
+          .orderBy('created_at','desc').limit(200)
+          .onSnapshot(s => s.docChanges().forEach(ch => {
+            if (ch.type === 'added') onAdd && onAdd(ch.doc.id);
+          }));
+      }
+      async function logScan(sessionId, code, matched){
+        if (!sessionId) return;
+        await db.collection('sessions').doc(sessionId).collection('scans').add({
+          code, matched: !!matched, ua: navigator.userAgent.slice(0,120),
+          created_at: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
 
-    return { signInAnon, ensureSession, saveTagServer, existsServer, subscribeTags, logScan };
-  })();
-</script>
+      return { signInAnon, ensureSession, saveTagServer, existsServer, subscribeTags, logScan };
+    })();
+  </script>
 
-
-<!-- keep this last so BV is defined before app.js runs -->
-<script src="app.js"></script>
-
+  <!-- Your app logic (uses BV) -->
+  <script src="app.js"></script>
 </body>
 </html>
