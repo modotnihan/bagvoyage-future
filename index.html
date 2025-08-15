@@ -124,86 +124,82 @@
 
    <!-- App JS -->
 
-  <!-- Firebase compat SDKs -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
+ <!-- Firebase compat SDKs -->
+<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
 
-  <script>
-    const firebaseConfig = {
-      apiKey: "AIzaSyAGIsT39wSCmFdygWtVe-u1DIPo06OTWko",
-      authDomain: "bagvoyage-future.firebaseapp.com",
-      projectId: "bagvoyage-future",
-      storageBucket: "bagvoyage-future.appspot.com",
-      messagingSenderId: "966888670918",
-      appId: "1:966888670918:web:cb61491c8ee5e85377f9c7",
-      measurementId: "G-BNENF85XLE"
-    };
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyAGIsT39wSCmFdygWtVe-u1DIPo06OTWko",
+    authDomain: "bagvoyage-future.firebaseapp.com",
+    projectId: "bagvoyage-future",
+    storageBucket: "bagvoyage-future.appspot.com",
+    messagingSenderId: "966888670918",
+    appId: "1:966888670918:web:cb61491c8ee5e85377f9c7",
+    measurementId: "G-BNENF85XLE"
+  };
+  firebase.initializeApp(firebaseConfig);
+  firebase.firestore().enableIndexedDbPersistence().catch(()=>{});
 
-    // Init Firebase (global)
-    firebase.initializeApp(firebaseConfig);
+  // GLOBAL session helper (no flights)
+  window.BV = (function(){
+    const db = firebase.firestore(), auth = firebase.auth();
 
-    // Keep the app working offline; syncs when back online
-    firebase.firestore().enableIndexedDbPersistence().catch(()=>{});
+    function sessionDocId(){ return 'global'; }
 
-    // Tiny helper API used by app.js (GLOBAL "BV") — GLOBAL SESSION (no flights)
-    window.BV = (function(){
-      const db = firebase.firestore(), auth = firebase.auth();
+    async function signInAnon(){
+      if (!auth.currentUser) await auth.signInAnonymously();
+      return auth.currentUser;
+    }
 
-      function sessionDocId(){ return 'global'; }   // single shared session
+    async function ensureSession(){
+      const id = sessionDocId();
+      await db.collection('sessions').doc(id).set({
+        label: 'global',
+        created_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      return id;
+    }
 
-      async function signInAnon(){
-        if (!auth.currentUser) await auth.signInAnonymously();
-        return auth.currentUser;
-      }
-
-      async function ensureSession(){
-        const id = sessionDocId();
-        await db.collection('sessions').doc(id).set({
-          label: 'global',
-          created_at: firebase.firestore.FieldValue.serverTimestamp()
+    async function saveTagServer(sessionId, code, source='camera'){
+      if (!sessionId || !code) return;
+      await db.collection('sessions').doc(sessionId)
+        .collection('tags').doc(code)
+        .set({ code, source,
+               created_at: firebase.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
-        return id;
-      }
+    }
 
-      async function saveTagServer(sessionId, code, source='camera'){
-        if (!sessionId || !code) return;
-        await db.collection('sessions').doc(sessionId)
-          .collection('tags').doc(code)
-          .set({ code, source,
-                 created_at: firebase.firestore.FieldValue.serverTimestamp()
-          }, { merge: true });
-      }
+    async function existsServer(sessionId, code){
+      if (!sessionId || !code) return false;
+      const snap = await db.collection('sessions').doc(sessionId)
+        .collection('tags').doc(code).get();
+      return snap.exists;
+    }
 
-      async function existsServer(sessionId, code){
-        if (!sessionId || !code) return false;
-        const snap = await db.collection('sessions').doc(sessionId)
-          .collection('tags').doc(code).get();
-        return snap.exists;
-      }
+    function subscribeTags(sessionId, onAdd){
+      return db.collection('sessions').doc(sessionId).collection('tags')
+        .orderBy('created_at','desc').limit(200)
+        .onSnapshot(snap => snap.docChanges().forEach(ch => {
+          if (ch.type === 'added') onAdd && onAdd(ch.doc.id);
+        }));
+    }
 
-      // Realtime: feed new tags into each device's local cache
-      function subscribeTags(sessionId, onAdd){
-        return db.collection('sessions').doc(sessionId).collection('tags')
-          .orderBy('created_at','desc').limit(200)
-          .onSnapshot(snap => snap.docChanges().forEach(ch => {
-            if (ch.type === 'added') onAdd && onAdd(ch.doc.id);
-          }));
-      }
+    async function logScan(sessionId, code, matched){
+      if (!sessionId) return;
+      await db.collection('sessions').doc(sessionId).collection('scans').add({
+        code, matched: !!matched, ua: navigator.userAgent.slice(0,120),
+        created_at: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    }
 
-      async function logScan(sessionId, code, matched){
-        if (!sessionId) return;
-        await db.collection('sessions').doc(sessionId).collection('scans').add({
-          code, matched: !!matched, ua: navigator.userAgent.slice(0,120),
-          created_at: firebase.firestore.FieldValue.serverTimestamp()
-        });
-      }
+    return { signInAnon, ensureSession, saveTagServer, existsServer, subscribeTags, logScan };
+  })();
+</script>
 
-      return { signInAnon, ensureSession, saveTagServer, existsServer, subscribeTags, logScan };
-    })();
-  </script>
+<!-- keep this last so BV is defined before app.js runs -->
+<script src="app.js"></script>
 
-  <!-- Load your app AFTER Firebase + BV are ready -->
-  <script src="app.js"></script>
 </body>
 </html>
