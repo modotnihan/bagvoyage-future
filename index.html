@@ -145,6 +145,57 @@
   const auth = firebase.auth();
 </script>
 
+  <script>
+  // make Firestore usable from app.js without refactor
+  window.BV = (function(){
+    const db = firebase.firestore(), auth = firebase.auth();
+    function sessionDocId(dateISO, flightNo){
+      return `${dateISO}_${(flightNo||'').toUpperCase().replace(/\s+/g,'')}`;
+    }
+    async function signInAnon(){ if(!auth.currentUser) await auth.signInAnonymously(); }
+    async function ensureSession(dateISO, flightNo){
+      const id = sessionDocId(dateISO, flightNo);
+      await db.collection('sessions').doc(id).set({
+        date: dateISO, flight_no: flightNo,
+        created_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge:true });
+      return id;
+    }
+    async function saveTagServer(sessionId, code, source='camera'){
+      if(!sessionId||!code) return;
+      await db.collection('sessions').doc(sessionId).collection('tags')
+        .doc(code).set({ code, source,
+          created_at: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge:true });
+    }
+    async function existsServer(sessionId, code){
+      if(!sessionId||!code) return false;
+      const snap = await db.collection('sessions').doc(sessionId)
+        .collection('tags').doc(code).get();
+      return snap.exists;
+    }
+    function subscribeTags(sessionId, onAdd){
+      return db.collection('sessions').doc(sessionId).collection('tags')
+        .orderBy('created_at','desc').limit(200)
+        .onSnapshot(s => s.docChanges().forEach(ch => {
+          if(ch.type==='added') onAdd && onAdd(ch.doc.id);
+        }));
+    }
+    async function logScan(sessionId, code, matched){
+      if(!sessionId) return;
+      await db.collection('sessions').doc(sessionId).collection('scans').add({
+        code, matched: !!matched, ua: navigator.userAgent.slice(0,120),
+        created_at: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    }
+    return { signInAnon, ensureSession, saveTagServer, existsServer, subscribeTags, logScan };
+  })();
+
+  // keep offline working
+  firebase.firestore().enableIndexedDbPersistence().catch(()=>{});
+</script>
+
+
 <script src="app.js"></script>
 
 
