@@ -46,6 +46,30 @@ function tryAssemble(){
          (b.length===10 || b.length===13) ? b : '';
 }
 
+(async () => {
+  try {
+    await BV.signInAnon();
+    const today = new Date().toISOString().slice(0,10);
+    let flightNo = localStorage.getItem('bv_flight') || '';
+    if (!flightNo) {
+      flightNo = prompt('Enter flight number for this session (e.g., MU123)') || 'TEST001';
+      localStorage.setItem('bv_flight', flightNo);
+    }
+    window.BV_SESSION_ID = await BV.ensureSession(today, flightNo);
+
+    // live-merge tags from other devices into local cache
+    BV.subscribeTags(window.BV_SESSION_ID, (code) => {
+      const DBKEY='bagvoyage_tags';
+      const a = JSON.parse(localStorage.getItem(DBKEY)||'[]');
+      if (!a.some(x=>x.code===code)) {
+        a.unshift({ code, ts: Date.now() });
+        localStorage.setItem(DBKEY, JSON.stringify(a));
+      }
+    });
+  } catch(e){ console.warn('Firebase init failed', e); }
+})();
+
+
 (function init(){
   if(window.__BAGVOYAGE_LOADED__){ console.warn('Bagvoyage already loaded.'); return; }
   window.__BAGVOYAGE_LOADED__ = true;
