@@ -512,6 +512,7 @@ function tryAssemble(){
       saveTag(code);
       vibrate(30);
       showSavedTick();
+      
     } else if (mode === 'retrieve') {
   let ok = exists(code);
   if (!ok) {
