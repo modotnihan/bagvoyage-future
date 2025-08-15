@@ -97,6 +97,8 @@ function tryAssemble(){
       console.error('Storage failed:', e);
       toast('Failed to save tag', 1000);
     }
+    BV.saveTagServer(window.BV_SESSION_ID, n).catch(()=>{});
+
   };
   const exists  = code => getAll().some(x=>x.code===normalizeBaggageCode(code));
 
