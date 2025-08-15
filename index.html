@@ -122,84 +122,88 @@
     </form>
   </dialog>
 
-  <!-- App JS -->
+   <!-- App JS -->
 
- <!-- Firebase compat SDKs -->
-<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
-
-<script>
-  const firebaseConfig = {
-    apiKey: "AIzaSyAGIsT39wSCmFdygWtVe-u1DIPo06OTWko",
-    authDomain: "bagvoyage-future.firebaseapp.com",
-    projectId: "bagvoyage-future",
-    storageBucket: "bagvoyage-future.appspot.com",
-    messagingSenderId: "966888670918",
-    appId: "1:966888670918:web:cb61491c8ee5e85377f9c7",
-    measurementId: "G-BNENF85XLE"
-  };
-
-  firebase.initializeApp(firebaseConfig);
-  const db   = firebase.firestore();
-  const auth = firebase.auth();
-</script>
+  <!-- Firebase compat SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
 
   <script>
-  // make Firestore usable from app.js without refactor
-  window.BV = (function(){
-    const db = firebase.firestore(), auth = firebase.auth();
-    function sessionDocId(dateISO, flightNo){
-      return `${dateISO}_${(flightNo||'').toUpperCase().replace(/\s+/g,'')}`;
-    }
-    async function signInAnon(){ if(!auth.currentUser) await auth.signInAnonymously(); }
-    async function ensureSession(dateISO, flightNo){
-      const id = sessionDocId(dateISO, flightNo);
-      await db.collection('sessions').doc(id).set({
-        date: dateISO, flight_no: flightNo,
-        created_at: firebase.firestore.FieldValue.serverTimestamp()
-      }, { merge:true });
-      return id;
-    }
-    async function saveTagServer(sessionId, code, source='camera'){
-      if(!sessionId||!code) return;
-      await db.collection('sessions').doc(sessionId).collection('tags')
-        .doc(code).set({ code, source,
+    const firebaseConfig = {
+      apiKey: "AIzaSyAGIsT39wSCmFdygWtVe-u1DIPo06OTWko",
+      authDomain: "bagvoyage-future.firebaseapp.com",
+      projectId: "bagvoyage-future",
+      storageBucket: "bagvoyage-future.appspot.com",
+      messagingSenderId: "966888670918",
+      appId: "1:966888670918:web:cb61491c8ee5e85377f9c7",
+      measurementId: "G-BNENF85XLE"
+    };
+
+    // Init Firebase (global)
+    firebase.initializeApp(firebaseConfig);
+
+    // Keep the app working offline; syncs when back online
+    firebase.firestore().enableIndexedDbPersistence().catch(()=>{});
+
+    // Tiny helper API used by app.js (GLOBAL "BV") — GLOBAL SESSION (no flights)
+    window.BV = (function(){
+      const db = firebase.firestore(), auth = firebase.auth();
+
+      function sessionDocId(){ return 'global'; }   // single shared session
+
+      async function signInAnon(){
+        if (!auth.currentUser) await auth.signInAnonymously();
+        return auth.currentUser;
+      }
+
+      async function ensureSession(){
+        const id = sessionDocId();
+        await db.collection('sessions').doc(id).set({
+          label: 'global',
           created_at: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge:true });
-    }
-    async function existsServer(sessionId, code){
-      if(!sessionId||!code) return false;
-      const snap = await db.collection('sessions').doc(sessionId)
-        .collection('tags').doc(code).get();
-      return snap.exists;
-    }
-    function subscribeTags(sessionId, onAdd){
-      return db.collection('sessions').doc(sessionId).collection('tags')
-        .orderBy('created_at','desc').limit(200)
-        .onSnapshot(s => s.docChanges().forEach(ch => {
-          if(ch.type==='added') onAdd && onAdd(ch.doc.id);
-        }));
-    }
-    async function logScan(sessionId, code, matched){
-      if(!sessionId) return;
-      await db.collection('sessions').doc(sessionId).collection('scans').add({
-        code, matched: !!matched, ua: navigator.userAgent.slice(0,120),
-        created_at: firebase.firestore.FieldValue.serverTimestamp()
-      });
-    }
-    return { signInAnon, ensureSession, saveTagServer, existsServer, subscribeTags, logScan };
-  })();
+        }, { merge: true });
+        return id;
+      }
 
-  // keep offline working
-  firebase.firestore().enableIndexedDbPersistence().catch(()=>{});
-</script>
+      async function saveTagServer(sessionId, code, source='camera'){
+        if (!sessionId || !code) return;
+        await db.collection('sessions').doc(sessionId)
+          .collection('tags').doc(code)
+          .set({ code, source,
+                 created_at: firebase.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+      }
 
+      async function existsServer(sessionId, code){
+        if (!sessionId || !code) return false;
+        const snap = await db.collection('sessions').doc(sessionId)
+          .collection('tags').doc(code).get();
+        return snap.exists;
+      }
 
-<script src="app.js"></script>
+      // Realtime: feed new tags into each device's local cache
+      function subscribeTags(sessionId, onAdd){
+        return db.collection('sessions').doc(sessionId).collection('tags')
+          .orderBy('created_at','desc').limit(200)
+          .onSnapshot(snap => snap.docChanges().forEach(ch => {
+            if (ch.type === 'added') onAdd && onAdd(ch.doc.id);
+          }));
+      }
 
+      async function logScan(sessionId, code, matched){
+        if (!sessionId) return;
+        await db.collection('sessions').doc(sessionId).collection('scans').add({
+          code, matched: !!matched, ua: navigator.userAgent.slice(0,120),
+          created_at: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
 
-    <script src="app.js"></script>  
-</script>
+      return { signInAnon, ensureSession, saveTagServer, existsServer, subscribeTags, logScan };
+    })();
+  </script>
+
+  <!-- Load your app AFTER Firebase + BV are ready -->
+  <script src="app.js"></script>
 </body>
 </html>
