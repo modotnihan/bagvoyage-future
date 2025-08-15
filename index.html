@@ -140,7 +140,9 @@
     measurementId: "G-BNENF85XLE"
   };
   firebase.initializeApp(firebaseConfig);
-  firebase.firestore().enableIndexedDbPersistence().catch(()=>{});
+  // compat API
+firebase.firestore().enablePersistence({ synchronizeTabs: true }).catch(()=>{});
+
 
   // GLOBAL session helper (no flights)
   window.BV = (function(){
