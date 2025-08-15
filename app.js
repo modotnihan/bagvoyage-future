@@ -46,30 +46,6 @@ function tryAssemble(){
          (b.length===10 || b.length===13) ? b : '';
 }
 
-(async () => {
-  try {
-    await BV.signInAnon();
-    const today = new Date().toISOString().slice(0,10);
-    let flightNo = localStorage.getItem('bv_flight') || '';
-    if (!flightNo) {
-      flightNo = prompt('Enter flight number for this session (e.g., MU123)') || 'TEST001';
-      localStorage.setItem('bv_flight', flightNo);
-    }
-    window.BV_SESSION_ID = await BV.ensureSession(today, flightNo);
-
-    // live-merge tags from other devices into local cache
-    BV.subscribeTags(window.BV_SESSION_ID, (code) => {
-      const DBKEY='bagvoyage_tags';
-      const a = JSON.parse(localStorage.getItem(DBKEY)||'[]');
-      if (!a.some(x=>x.code===code)) {
-        a.unshift({ code, ts: Date.now() });
-        localStorage.setItem(DBKEY, JSON.stringify(a));
-      }
-    });
-  } catch(e){ console.warn('Firebase init failed', e); }
-})();
-
-
 (function init(){
   if(window.__BAGVOYAGE_LOADED__){ console.warn('Bagvoyage already loaded.'); return; }
   window.__BAGVOYAGE_LOADED__ = true;
@@ -93,12 +69,14 @@ function tryAssemble(){
     const a = getAll();
     if (a.length > 100) a.pop();
     a.unshift({code:n,ts:Date.now()});
-    try { localStorage.setItem(DBKEY, JSON.stringify(a)); } catch (e) {
+    try {
+      localStorage.setItem(DBKEY, JSON.stringify(a));
+    } catch (e) {
       console.error('Storage failed:', e);
       toast('Failed to save tag', 1000);
     }
+    // ALSO save to Firestore (global session)
     BV.saveTagServer(window.BV_SESSION_ID, n).catch(()=>{});
-
   };
   const exists  = code => getAll().some(x=>x.code===normalizeBaggageCode(code));
 
@@ -141,9 +119,7 @@ function tryAssemble(){
     if (hidActive) return;
     hidActive = true;
     hidBuffer = '';
-    // Ensure no focus on any input → prevents soft keyboard
     try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch {}
-    // Gather printable keys
     document.addEventListener('keydown', onHIDKeyDown, true);
   }
   function disableHIDCapture(){
@@ -155,10 +131,8 @@ function tryAssemble(){
   }
   function onHIDKeyDown(e){
     if (!useHardwareScanner) return;
-    // Ignore when modifiers pressed (except Shift for digits)
     if (e.ctrlKey || e.altKey || e.metaKey) return;
 
-    // Enter ends the scan
     if (e.key === 'Enter') {
       e.preventDefault();
       const code = hidBuffer.trim();
@@ -167,10 +141,8 @@ function tryAssemble(){
       return;
     }
 
-    // Collect digits/letters quickly; you can restrict to digits if you prefer
     if (e.key && e.key.length === 1) {
       const ch = e.key;
-      // accept [0-9A-Za-z-_/+] etc if needed; we only need digits but fragments can arrive
       if (/^[0-9A-Za-z\-_/+]+$/.test(ch)) {
         hidBuffer += ch;
         clearTimeout(hidTimer);
@@ -179,7 +151,6 @@ function tryAssemble(){
           hidBuffer = '';
           if (code.length >= 8) onScan(code);
         }, HID_IDLE_MS);
-        // Don't let keystrokes type into focused elements if any
         e.preventDefault();
       }
     }
@@ -341,8 +312,8 @@ function tryAssemble(){
     $scan.classList.remove('hidden');
     $scan.classList.add('active');
     if (useHardwareScanner) {
-      disableHIDCapture(); // reset
-      enableHIDCapture();  // start global capture (no focus)
+      disableHIDCapture();
+      enableHIDCapture();
     } else {
       disableHIDCapture();
     }
@@ -353,7 +324,6 @@ function tryAssemble(){
     if (isScanning) return;
     showScan(m);
 
-    // HID-only path
     if (useHardwareScanner) {
       isScanning = false;
       setCamStatus(false);
@@ -512,25 +482,27 @@ function tryAssemble(){
       saveTag(code);
       vibrate(30);
       showSavedTick();
-      
+
     } else if (mode === 'retrieve') {
-  let ok = exists(code);
-  if (!ok) {
-    try { ok = await BV.existsServer(window.BV_SESSION_ID, code); } catch {}
-  }
-  BV.logScan(window.BV_SESSION_ID, code, ok).catch(()=>{});
+      let ok = exists(code);
+      if (!ok) {
+        try { ok = await BV.existsServer(window.BV_SESSION_ID, code); } catch {}
+      }
 
-  if (ok) {
-    vibrate([40,60,40]);
-    isScanning = false;
-    await stopCamera();
-    openSheet('ok','MATCH',code,true);
-  } else {
-    vibrate([30,40,30]);
-    openSheet('bad','UNMATCHED',code,false);
-  }
-}
+      // optional audit trail
+      BV.logScan(window.BV_SESSION_ID, code, ok).catch(()=>{});
 
+      if (ok) {
+        vibrate([40,60,40]);
+        isScanning = false;
+        await stopCamera();
+        openSheet('ok','MATCH',code,true);
+      } else {
+        vibrate([30,40,30]);
+        openSheet('bad','UNMATCHED',code,false);
+      }
+    }
+  }
 
   /* ---------- Continue flow ---------- */
   async function onContinue(e){
@@ -540,7 +512,6 @@ function tryAssemble(){
     if (mode !== 'retrieve') mode = 'retrieve';
 
     if (useHardwareScanner) {
-      // Stay in HID mode; just make sure camera is off and doc has no focused input
       await stopCamera();
       try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch {}
       return;
@@ -573,7 +544,6 @@ function tryAssemble(){
     if(!mode || mode==='tag'){ saveTag(v); showSavedTick(); }
     else { exists(v) ? (stopCamera(), openSheet('ok','MATCH',v,true)) : openSheet('bad','UNMATCHED',v,false); }
     $manualDlg.close();
-    // In HID mode: keep document unfocused to prevent keyboard
     if (useHardwareScanner) { try{ document.activeElement && document.activeElement.blur && document.activeElement.blur(); }catch{} }
   });
 
@@ -590,7 +560,6 @@ function tryAssemble(){
       setCamStatus(false);
       await updateTorchUI();
       enableHIDCapture();
-      // Ensure nothing focused
       try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch {}
     } else {
       disableHIDCapture();
@@ -622,4 +591,24 @@ function tryAssemble(){
 
   // Initialize labels/states
   $hidBtn.textContent = `Hardware Scanner: ${useHardwareScanner ? 'On' : 'Off'}`;
-})();
+
+  /* ---------- Firebase bootstrap: GLOBAL session ---------- */
+  (async () => {
+    try {
+      await BV.signInAnon();
+      window.BV_SESSION_ID = await BV.ensureSession(); // 'global'
+      // feed new tags from other devices into local cache
+      BV.subscribeTags(window.BV_SESSION_ID, (code) => {
+        const a = getAll();
+        if (!a.some(x=>x.code===code)) {
+          a.unshift({ code, ts: Date.now() });
+          try { localStorage.setItem(DBKEY, JSON.stringify(a)); } catch {}
+        }
+      });
+      console.log('[Bagvoyage] Firebase ready, session:', window.BV_SESSION_ID);
+    } catch (e) {
+      console.warn('Firebase init failed', e);
+    }
+  })();
+
+})(); // end init IIFE
