@@ -512,19 +512,24 @@ function tryAssemble(){
       saveTag(code);
       vibrate(30);
       showSavedTick();
-    }else if(mode==='retrieve'){
-      const ok = exists(code);
-      if(ok){
-        vibrate([40,60,40]);
-        isScanning = false;
-        await stopCamera();
-        openSheet('ok','MATCH',code,true);
-      } else {
-        vibrate([30,40,30]);
-        openSheet('bad','UNMATCHED',code,false);
-      }
-    }
+    } else if (mode === 'retrieve') {
+  let ok = exists(code);
+  if (!ok) {
+    try { ok = await BV.existsServer(window.BV_SESSION_ID, code); } catch {}
   }
+  BV.logScan(window.BV_SESSION_ID, code, ok).catch(()=>{});
+
+  if (ok) {
+    vibrate([40,60,40]);
+    isScanning = false;
+    await stopCamera();
+    openSheet('ok','MATCH',code,true);
+  } else {
+    vibrate([30,40,30]);
+    openSheet('bad','UNMATCHED',code,false);
+  }
+}
+
 
   /* ---------- Continue flow ---------- */
   async function onContinue(e){
